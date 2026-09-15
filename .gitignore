@@ -3,3 +3,5 @@ __pycache__/
 .env
 staticfiles/
 media/documents/
+node_modules/
+dist/
