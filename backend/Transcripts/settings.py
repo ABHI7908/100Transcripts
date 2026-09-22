@@ -202,3 +202,8 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+
+# ---- Global safety net: never leak raw exception text to API clients ----
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "App.exception_handler.custom_exception_handler",
+}
