@@ -9,6 +9,7 @@ pipeline {
         FRONTEND_INSTANCE = 'i-09e2d8d3e0597e226'
         AWS_REGION = 'ap-south-2'
         DEPLOY_BUCKET = 'task01-transcripts-media'
+        NOTIFY_EMAIL = 'abhinay.lone7908@gmail.com'
     }
 
     stages {
@@ -29,9 +30,6 @@ pipeline {
         stage('Build Frontend Image') {
             steps {
                 dir('frontend') {
-                    // The Dockerfile expects nginx.conf; the repo keeps it as
-                    // nginx.docker.conf to avoid clashing with any other nginx
-                    // config in the same folder. Rename for the build context only.
                     sh 'cp nginx.docker.conf nginx.conf'
                     sh 'docker build -t $IMAGE_FRONTEND:latest -t $IMAGE_FRONTEND:${BUILD_NUMBER} .'
                 }
@@ -51,6 +49,11 @@ pipeline {
 
         stage('Approval') {
             steps {
+                emailext(
+                    to: "${NOTIFY_EMAIL}",
+                    subject: "[Jenkins] Build #${env.BUILD_NUMBER} awaiting deploy approval",
+                    body: "Build #${env.BUILD_NUMBER} finished building and pushed both images successfully.\n\nIt's now waiting on manual approval before deploying to production (app.abhinayportfolio.shop / api.abhinayportfolio.shop).\n\nApprove or abort here: ${env.BUILD_URL}input/\n\nThis will auto-abort if not approved within 30 minutes."
+                )
                 timeout(time: 30, unit: 'MINUTES') {
                     input message: "Deploy build #${env.BUILD_NUMBER} to production (app.abhinayportfolio.shop / api.abhinayportfolio.shop)?", ok: 'Deploy'
                 }
@@ -58,8 +61,6 @@ pipeline {
         }
 
         stage('Deploy Backend') {
-            // Backend runs as a live Docker container in production, so
-            // deploying means: pull the new image, replace the running container.
             steps {
                 sh '''
                     CMD_ID=$(aws ssm send-command --region $AWS_REGION \
@@ -76,22 +77,27 @@ pipeline {
         }
 
         stage('Deploy Frontend') {
-            // Frontend does NOT run as a container in production — it's a plain
-            // Nginx host serving a built dist/ folder. So "deploy" here means:
-            // pull the already-built static files out of the image we just made,
-            // ship them to the frontend host, and swap them into place.
             steps {
                 sh '''
                     docker create --name frontend-extract-${BUILD_NUMBER} $IMAGE_FRONTEND:latest
                     docker cp frontend-extract-${BUILD_NUMBER}:/usr/share/nginx/html /tmp/frontend-dist-${BUILD_NUMBER}
                     docker rm frontend-extract-${BUILD_NUMBER}
+
+                    # Safety check added after a real incident: don't proceed if the
+                    # extracted build is empty, or a bad deploy will wipe the live site.
+                    FILE_COUNT=$(find /tmp/frontend-dist-${BUILD_NUMBER} -type f | wc -l)
+                    if [ "$FILE_COUNT" -lt 1 ]; then
+                        echo "ERROR: extracted frontend build is empty (0 files) - aborting deploy, live site left untouched."
+                        exit 1
+                    fi
+
                     tar -czf /tmp/frontend-dist-${BUILD_NUMBER}.tar.gz -C /tmp/frontend-dist-${BUILD_NUMBER} .
                     aws s3 cp /tmp/frontend-dist-${BUILD_NUMBER}.tar.gz s3://$DEPLOY_BUCKET/jenkins-deploy/frontend-dist-${BUILD_NUMBER}.tar.gz
 
                     CMD_ID=$(aws ssm send-command --region $AWS_REGION \
                       --instance-ids $FRONTEND_INSTANCE \
                       --document-name "AWS-RunShellScript" \
-                      --parameters "{\\"commands\\":[\\"aws s3 cp s3://$DEPLOY_BUCKET/jenkins-deploy/frontend-dist-${BUILD_NUMBER}.tar.gz /tmp/frontend-dist.tar.gz\\", \\"rm -rf /opt/app/frontend/dist.new\\", \\"mkdir -p /opt/app/frontend/dist.new\\", \\"tar -xzf /tmp/frontend-dist.tar.gz -C /opt/app/frontend/dist.new\\", \\"rm -rf /opt/app/frontend/dist.old\\", \\"mv /opt/app/frontend/dist /opt/app/frontend/dist.old\\", \\"mv /opt/app/frontend/dist.new /opt/app/frontend/dist\\"]}" \
+                      --parameters "{\\"commands\\":[\\"aws s3 cp s3://$DEPLOY_BUCKET/jenkins-deploy/frontend-dist-${BUILD_NUMBER}.tar.gz /tmp/frontend-dist.tar.gz\\", \\"rm -rf /opt/app/frontend/dist.new\\", \\"mkdir -p /opt/app/frontend/dist.new\\", \\"tar -xzf /tmp/frontend-dist.tar.gz -C /opt/app/frontend/dist.new\\", \\"FILE_COUNT=\$(find /opt/app/frontend/dist.new -type f | wc -l)\\", \\"if [ \\\\\\"\$FILE_COUNT\\\\\\" -lt 1 ]; then echo EXTRACTED_BUILD_EMPTY_ABORTING; rm -rf /opt/app/frontend/dist.new; exit 1; fi\\", \\"rm -rf /opt/app/frontend/dist.old\\", \\"mv /opt/app/frontend/dist /opt/app/frontend/dist.old\\", \\"mv /opt/app/frontend/dist.new /opt/app/frontend/dist\\"]}" \
                       --query 'Command.CommandId' --output text)
                     echo "Frontend deploy command: $CMD_ID"
                     sleep 15
@@ -106,13 +112,25 @@ pipeline {
             sh 'docker logout || true'
         }
         success {
-            echo "Build #${env.BUILD_NUMBER}: images built, pushed, and deployed successfully."
+            emailext(
+                to: "${NOTIFY_EMAIL}",
+                subject: "[Jenkins] Build #${env.BUILD_NUMBER} deployed successfully",
+                body: "Build #${env.BUILD_NUMBER} built, pushed, and deployed to production successfully.\n\napp.abhinayportfolio.shop\napi.abhinayportfolio.shop\n\nConsole: ${env.BUILD_URL}console"
+            )
         }
         aborted {
-            echo 'Deploy was not approved in time (or was manually aborted) — images were pushed to Docker Hub but nothing was deployed.'
+            emailext(
+                to: "${NOTIFY_EMAIL}",
+                subject: "[Jenkins] Build #${env.BUILD_NUMBER} aborted - not deployed",
+                body: "Build #${env.BUILD_NUMBER} was not approved in time (or was manually aborted).\n\nImages were pushed to Docker Hub, but nothing was deployed to production.\n\nConsole: ${env.BUILD_URL}console"
+            )
         }
         failure {
-            echo 'Build or deploy failed — check the stage logs above for which step broke.'
+            emailext(
+                to: "${NOTIFY_EMAIL}",
+                subject: "[Jenkins] Build #${env.BUILD_NUMBER} FAILED",
+                body: "Build #${env.BUILD_NUMBER} failed. Check which stage broke:\n\n${env.BUILD_URL}console"
+            )
         }
     }
 }
