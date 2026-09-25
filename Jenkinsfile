@@ -9,7 +9,7 @@ pipeline {
         FRONTEND_INSTANCE = 'i-09e2d8d3e0597e226'
         AWS_REGION = 'ap-south-2'
         DEPLOY_BUCKET = 'task01-transcripts-media'
-        NOTIFY_EMAIL = 'abhinay.lone7908@gmail.com'
+        NOTIFY_EMAIL = 'abhinaylone3@gmail.com'
     }
 
     stages {
@@ -83,8 +83,6 @@ pipeline {
                     docker cp frontend-extract-${BUILD_NUMBER}:/usr/share/nginx/html /tmp/frontend-dist-${BUILD_NUMBER}
                     docker rm frontend-extract-${BUILD_NUMBER}
 
-                    # Safety check added after a real incident: don't proceed if the
-                    # extracted build is empty, or a bad deploy will wipe the live site.
                     FILE_COUNT=$(find /tmp/frontend-dist-${BUILD_NUMBER} -type f | wc -l)
                     if [ "$FILE_COUNT" -lt 1 ]; then
                         echo "ERROR: extracted frontend build is empty (0 files) - aborting deploy, live site left untouched."
